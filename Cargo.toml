@@ -2,9 +2,9 @@
 name = "Raspberry-Pi-Display"
 version = "0.1.0"
 description = "A TUI app for my Raspberry pi"
-authors = ["Josh McKinney <joshka@users.noreply.github.com>"]
+authors = ["Mihir Sahu"]
 license = "MIT"
-edition = "2024"
+edition = "2025"
 
 [dependencies]
 color-eyre = "0.6.3"
