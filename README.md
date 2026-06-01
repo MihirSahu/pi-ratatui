@@ -2,8 +2,14 @@
 
 A small terminal dashboard for a monitor attached to a Raspberry Pi 4B.
 
-The first screen renders a Clawd-inspired mascot that walks around the terminal.
-It uses terminal cell background colors, which keeps the pixel-art shape more
+The default screen renders a Clawd-inspired mascot walking horizontally above
+Raspberry Pi stats:
+
+- CPU temperature
+- Network input/output rates
+- Available storage
+
+Clawd uses terminal cell background colors, which keeps the pixel-art shape more
 consistent than Unicode block characters across different terminal fonts.
 
 ## Run
@@ -13,6 +19,13 @@ cargo run
 ```
 
 Press `q`, `Esc`, or `Ctrl-C` to exit.
+
+Press `c` to toggle a Clawd-coding-on-a-laptop scene.
+
+Press `s` to toggle a suited Clawd scene.
+
+Press `Tab` or `r` to cycle through dashboard, laptop, suited, and full-screen
+roaming Clawd scenes.
 
 ## Raspberry Pi
 
@@ -32,3 +45,11 @@ Format and check before committing:
 cargo fmt
 cargo check
 ```
+
+Export sprite contact sheets for visual review:
+
+```bash
+cargo run -- --preview-sprites
+```
+
+PNG previews are written to `target/sprite-previews/`.
