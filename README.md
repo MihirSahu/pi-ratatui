@@ -37,6 +37,102 @@ cargo run --release
 
 Release mode is recommended for faster startup on the Pi.
 
+### Run on the attached monitor
+
+Build the release binary:
+
+```bash
+cargo build --release
+```
+
+Create a systemd service that owns `tty1`:
+
+```bash
+sudo nano /etc/systemd/system/pi-tui.service
+```
+
+Use this service file, adjusting `WorkingDirectory` and `ExecStart` if the repo
+is not in `/home/pi/Downloads/pi-ratatui`:
+
+```ini
+[Unit]
+Description=Pi TUI Dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/home/pi/Downloads/pi-ratatui
+ExecStart=/home/pi/Downloads/pi-ratatui/target/release/Raspberry-Pi-Display
+
+StandardInput=tty
+StandardOutput=tty
+StandardError=journal
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Enable and start it:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now pi-tui
+```
+
+After editing the service, reload systemd before restarting:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart pi-tui
+```
+
+Check status and logs:
+
+```bash
+systemctl status pi-tui
+journalctl -u pi-tui -f
+```
+
+### Console font
+
+The dashboard size depends on the Linux console font because it renders with
+terminal cells. Configure a larger font with:
+
+```bash
+sudo dpkg-reconfigure console-setup
+```
+
+Recommended choices:
+
+- Encoding: `UTF-8`
+- Character set: `Guess optimal character set`
+- Font: `TerminusBold`
+- Font size: `16x32`
+
+Apply the font immediately:
+
+```bash
+sudo systemctl restart console-setup
+sudo systemctl restart pi-tui
+```
+
+For a one-off test on `tty1`, stop the dashboard, set the font, then start it:
+
+```bash
+sudo systemctl stop pi-tui
+sudo setfont /usr/share/consolefonts/Uni2-TerminusBold32x16.psf.gz -C /dev/tty1
+sudo systemctl start pi-tui
+```
+
 ## Development
 
 Format and check before committing:
