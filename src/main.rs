@@ -1,27 +1,28 @@
 use std::{
-    fs,
-    path::Path,
+    sync::mpsc::{self, Receiver},
     time::{Duration, Instant},
 };
 
 use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::{
-    DefaultTerminal, Frame,
-    buffer::Buffer,
-    layout::Rect,
-    style::{Color, Style},
-    text::{Line, Span},
-    widgets::{Paragraph, Widget},
+use ratatui::{DefaultTerminal, Frame, layout::Rect};
+
+use crate::{
+    control::{ControlCommand, ControlScene},
+    metrics::{Metrics, StatsSnapshot},
+    stats_panel::StatsPanel,
 };
-use sysinfo::{Components, Disks, Networks};
 
 mod clawd;
+mod control;
+mod metrics;
 mod sprite_preview;
+mod stats_panel;
 
 const TICK_RATE: Duration = Duration::from_millis(140);
 const STATS_RATE: Duration = Duration::from_secs(1);
-const STATS_HEIGHT: u16 = 6;
-const STATS_MIN_WIDTH: u16 = 44;
+const STATS_HEIGHT: u16 = stats_panel::HEIGHT;
+const STATS_MIN_WIDTH: u16 = 62;
+const STATIONARY_MAX_ART_SCALE: u16 = 2;
 
 fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
@@ -32,20 +33,27 @@ fn main() -> color_eyre::Result<()> {
         return Ok(());
     }
 
-    ratatui::run(app)?;
+    let (control_tx, control_rx) = mpsc::channel();
+    match control::start(control_tx) {
+        Ok(addr) => eprintln!("Control API listening on http://{addr}"),
+        Err(error) => eprintln!("Control API unavailable: {error}"),
+    }
+
+    ratatui::run(|terminal| app(terminal, control_rx))?;
     Ok(())
 }
 
-fn app(terminal: &mut DefaultTerminal) -> std::io::Result<()> {
-    let mut app = App::default();
+fn app(
+    terminal: &mut DefaultTerminal,
+    control_rx: Receiver<ControlCommand>,
+) -> std::io::Result<()> {
+    let mut app = App::new(control_rx);
 
     loop {
         terminal.draw(|frame| render(frame, &app))?;
 
-        if event::poll(TICK_RATE)? {
-            if app.handle_event(event::read()?) {
-                return Ok(());
-            }
+        if event::poll(TICK_RATE)? && app.handle_event(event::read()?) {
+            return Ok(());
         }
 
         app.tick();
@@ -63,21 +71,30 @@ fn render(frame: &mut Frame, app: &App) {
 
 fn render_dashboard(frame: &mut Frame, app: &App) {
     let area = frame.area();
-    let content = centered_scene_area(area, clawd::WIDTH, clawd::HEIGHT);
-    let track_width = content.width.max(clawd::WIDTH);
+    let scale = art_scale(
+        area,
+        clawd::WIDTH.saturating_mul(2),
+        clawd::HEIGHT,
+        STATS_HEIGHT + 1,
+        STATIONARY_MAX_ART_SCALE,
+    );
+    let mascot_width = scaled(clawd::WIDTH, scale);
+    let mascot_height = scaled(clawd::HEIGHT, scale);
+    let content = centered_scene_area(area, mascot_width.saturating_mul(2), mascot_height);
+    let track_width = content.width.max(mascot_width);
     let track_area = Rect {
         x: content.x,
         y: content.y,
         width: track_width.min(area.width),
-        height: clawd::HEIGHT.min(area.height),
+        height: mascot_height.min(area.height),
     };
     let mascot_area = Rect {
-        x: track_area.x + bounded_axis(app.dashboard_x, track_area.width, clawd::WIDTH),
+        x: track_area.x + bounded_axis(app.dashboard_x, track_area.width, mascot_width),
         y: track_area.y,
-        width: clawd::WIDTH.min(track_area.width),
-        height: clawd::HEIGHT.min(track_area.height),
+        width: mascot_width.min(track_area.width),
+        height: mascot_height.min(track_area.height),
     };
-    let stats_y = content.y + clawd::HEIGHT + 1;
+    let stats_y = content.y + mascot_height + 1;
     let stats_area = Rect {
         x: content.x,
         y: stats_y,
@@ -85,20 +102,29 @@ fn render_dashboard(frame: &mut Frame, app: &App) {
         height: STATS_HEIGHT.min(area.bottom().saturating_sub(stats_y)),
     };
 
-    frame.render_widget(clawd::Clawd::new(app.frame), mascot_area);
+    frame.render_widget(clawd::Clawd::scaled(app.frame, scale), mascot_area);
     frame.render_widget(StatsPanel::new(&app.stats), stats_area);
 }
 
 fn render_coding(frame: &mut Frame, app: &App) {
     let area = frame.area();
-    let content = centered_scene_area(area, clawd::CODING_WIDTH, clawd::CODING_HEIGHT);
+    let scale = art_scale(
+        area,
+        clawd::CODING_WIDTH,
+        clawd::CODING_HEIGHT,
+        STATS_HEIGHT + 1,
+        STATIONARY_MAX_ART_SCALE,
+    );
+    let mascot_width = scaled(clawd::CODING_WIDTH, scale);
+    let mascot_height = scaled(clawd::CODING_HEIGHT, scale);
+    let content = centered_scene_area(area, mascot_width, mascot_height);
     let mascot_area = Rect {
-        x: content.x + content.width.saturating_sub(clawd::CODING_WIDTH) / 2,
+        x: content.x + content.width.saturating_sub(mascot_width) / 2,
         y: content.y,
-        width: clawd::CODING_WIDTH.min(content.width),
-        height: clawd::CODING_HEIGHT.min(content.height),
+        width: mascot_width.min(content.width),
+        height: mascot_height.min(content.height),
     };
-    let stats_y = content.y + clawd::CODING_HEIGHT + 1;
+    let stats_y = content.y + mascot_height + 1;
     let stats_area = Rect {
         x: content.x,
         y: stats_y,
@@ -106,20 +132,32 @@ fn render_coding(frame: &mut Frame, app: &App) {
         height: STATS_HEIGHT.min(area.bottom().saturating_sub(stats_y)),
     };
 
-    frame.render_widget(clawd::CodingClawd::new(app.coding_frame), mascot_area);
+    frame.render_widget(
+        clawd::CodingClawd::scaled(app.coding_frame, scale),
+        mascot_area,
+    );
     frame.render_widget(StatsPanel::new(&app.stats), stats_area);
 }
 
 fn render_suit(frame: &mut Frame, app: &App) {
     let area = frame.area();
-    let content = centered_scene_area(area, clawd::SUIT_WIDTH, clawd::SUIT_HEIGHT);
+    let scale = art_scale(
+        area,
+        clawd::SUIT_WIDTH,
+        clawd::SUIT_HEIGHT,
+        STATS_HEIGHT + 1,
+        STATIONARY_MAX_ART_SCALE,
+    );
+    let mascot_width = scaled(clawd::SUIT_WIDTH, scale);
+    let mascot_height = scaled(clawd::SUIT_HEIGHT, scale);
+    let content = centered_scene_area(area, mascot_width, mascot_height);
     let mascot_area = Rect {
-        x: content.x + content.width.saturating_sub(clawd::SUIT_WIDTH) / 2,
+        x: content.x + content.width.saturating_sub(mascot_width) / 2,
         y: content.y,
-        width: clawd::SUIT_WIDTH.min(content.width),
-        height: clawd::SUIT_HEIGHT.min(content.height),
+        width: mascot_width.min(content.width),
+        height: mascot_height.min(content.height),
     };
-    let stats_y = content.y + clawd::SUIT_HEIGHT + 1;
+    let stats_y = content.y + mascot_height + 1;
     let stats_area = Rect {
         x: content.x,
         y: stats_y,
@@ -127,13 +165,20 @@ fn render_suit(frame: &mut Frame, app: &App) {
         height: STATS_HEIGHT.min(area.bottom().saturating_sub(stats_y)),
     };
 
-    frame.render_widget(clawd::SuitClawd::new(app.suit_frame), mascot_area);
+    frame.render_widget(clawd::SuitClawd::scaled(app.suit_frame, scale), mascot_area);
     frame.render_widget(StatsPanel::new(&app.stats), stats_area);
 }
 
 fn render_roam(frame: &mut Frame, app: &App) {
     let mascot_area = app.roam_area(frame.area());
-    frame.render_widget(clawd::Clawd::new(app.frame), mascot_area);
+    let scale = art_scale(
+        frame.area(),
+        clawd::WIDTH,
+        clawd::HEIGHT,
+        0,
+        STATIONARY_MAX_ART_SCALE,
+    );
+    frame.render_widget(clawd::Clawd::scaled(app.frame, scale), mascot_area);
 }
 
 fn centered_scene_area(area: Rect, mascot_width: u16, mascot_height: u16) -> Rect {
@@ -146,6 +191,18 @@ fn centered_scene_area(area: Rect, mascot_width: u16, mascot_height: u16) -> Rec
         width,
         height,
     }
+}
+
+fn art_scale(area: Rect, width: u16, height: u16, reserved_height: u16, max_scale: u16) -> u16 {
+    let available_height = area.height.saturating_sub(reserved_height);
+    let width_scale = area.width / width.max(1);
+    let height_scale = available_height / height.max(1);
+
+    width_scale.min(height_scale).clamp(1, max_scale.max(1))
+}
+
+fn scaled(value: u16, scale: u16) -> u16 {
+    value.saturating_mul(scale.max(1))
 }
 
 struct App {
@@ -161,6 +218,7 @@ struct App {
     last_stats_refresh: Instant,
     metrics: Metrics,
     stats: StatsSnapshot,
+    control_rx: Receiver<ControlCommand>,
 }
 
 #[derive(Clone, Copy)]
@@ -171,8 +229,8 @@ enum ViewMode {
     Roam,
 }
 
-impl Default for App {
-    fn default() -> Self {
+impl App {
+    fn new(control_rx: Receiver<ControlCommand>) -> Self {
         let mut metrics = Metrics::new();
         let stats = metrics.refresh(STATS_RATE);
 
@@ -189,12 +247,13 @@ impl Default for App {
             last_stats_refresh: Instant::now(),
             metrics,
             stats,
+            control_rx,
         }
     }
-}
 
-impl App {
     fn tick(&mut self) {
+        self.handle_control_commands();
+
         self.x += self.dx;
         self.y += self.dy;
         self.dashboard_x += 1;
@@ -208,6 +267,31 @@ impl App {
             self.stats = self.metrics.refresh(elapsed);
             self.last_stats_refresh = now;
         }
+    }
+
+    fn handle_control_commands(&mut self) {
+        while let Ok(command) = self.control_rx.try_recv() {
+            match command {
+                ControlCommand::Reset => self.reset_scene(),
+                ControlCommand::SetScene(scene) => self.set_scene(scene),
+            }
+        }
+    }
+
+    fn reset_scene(&mut self) {
+        self.mode = ViewMode::Dashboard;
+        self.dashboard_x = 0;
+        self.x = 0;
+        self.y = 0;
+    }
+
+    fn set_scene(&mut self, scene: ControlScene) {
+        self.mode = match scene {
+            ControlScene::Dashboard => ViewMode::Dashboard,
+            ControlScene::Coding => ViewMode::Coding,
+            ControlScene::Suit => ViewMode::Suit,
+            ControlScene::Roam => ViewMode::Roam,
+        };
     }
 
     fn handle_event(&mut self, event: Event) -> bool {
@@ -254,218 +338,24 @@ impl App {
     }
 
     fn roam_area(&self, terminal: Rect) -> Rect {
-        let x = bounded_axis(self.x, terminal.width, clawd::WIDTH);
-        let y = bounded_axis(self.y, terminal.height, clawd::HEIGHT);
+        let scale = art_scale(
+            terminal,
+            clawd::WIDTH,
+            clawd::HEIGHT,
+            0,
+            STATIONARY_MAX_ART_SCALE,
+        );
+        let width = scaled(clawd::WIDTH, scale);
+        let height = scaled(clawd::HEIGHT, scale);
+        let x = bounded_axis(self.x, terminal.width, width);
+        let y = bounded_axis(self.y, terminal.height, height);
 
         Rect {
             x: terminal.x + x,
             y: terminal.y + y,
-            width: clawd::WIDTH.min(terminal.width),
-            height: clawd::HEIGHT.min(terminal.height),
+            width: width.min(terminal.width),
+            height: height.min(terminal.height),
         }
-    }
-}
-
-#[derive(Clone, Copy, Default)]
-struct StatsSnapshot {
-    temperature_c: Option<f32>,
-    network_in_per_sec: f64,
-    network_out_per_sec: f64,
-    storage: Option<StorageSnapshot>,
-}
-
-#[derive(Clone, Copy)]
-struct StorageSnapshot {
-    available: u64,
-    total: u64,
-}
-
-struct Metrics {
-    networks: Networks,
-    disks: Disks,
-    components: Components,
-}
-
-impl Metrics {
-    fn new() -> Self {
-        let mut networks = Networks::new_with_refreshed_list();
-        let mut disks = Disks::new_with_refreshed_list();
-        let mut components = Components::new_with_refreshed_list();
-
-        networks.refresh(true);
-        disks.refresh(true);
-        components.refresh(true);
-
-        Self {
-            networks,
-            disks,
-            components,
-        }
-    }
-
-    fn refresh(&mut self, elapsed: Duration) -> StatsSnapshot {
-        self.networks.refresh(true);
-        self.disks.refresh(true);
-        self.components.refresh(true);
-
-        let seconds = elapsed.as_secs_f64().max(0.001);
-        let (received, transmitted) = network_bytes(&self.networks);
-
-        StatsSnapshot {
-            temperature_c: component_temperature(&self.components).or_else(pi_temperature),
-            network_in_per_sec: received as f64 / seconds,
-            network_out_per_sec: transmitted as f64 / seconds,
-            storage: storage_snapshot(&self.disks),
-        }
-    }
-}
-
-fn network_bytes(networks: &Networks) -> (u64, u64) {
-    let mut received = 0;
-    let mut transmitted = 0;
-    let mut found_non_loopback = false;
-
-    for (name, data) in networks.iter() {
-        if name.starts_with("lo") {
-            continue;
-        }
-
-        found_non_loopback = true;
-        received += data.received();
-        transmitted += data.transmitted();
-    }
-
-    if found_non_loopback {
-        return (received, transmitted);
-    }
-
-    networks
-        .iter()
-        .fold((0, 0), |(received, transmitted), (_, data)| {
-            (received + data.received(), transmitted + data.transmitted())
-        })
-}
-
-fn component_temperature(components: &Components) -> Option<f32> {
-    components
-        .list()
-        .iter()
-        .filter_map(|component| component.temperature())
-        .filter(|temperature| temperature.is_finite())
-        .max_by(|a, b| a.total_cmp(b))
-}
-
-fn pi_temperature() -> Option<f32> {
-    let raw = fs::read_to_string("/sys/class/thermal/thermal_zone0/temp").ok()?;
-    let milli_celsius = raw.trim().parse::<f32>().ok()?;
-
-    Some(milli_celsius / 1000.0)
-}
-
-fn storage_snapshot(disks: &Disks) -> Option<StorageSnapshot> {
-    let current_dir = std::env::current_dir().ok();
-    let disk = disks
-        .list()
-        .iter()
-        .max_by_key(|disk| {
-            current_dir
-                .as_ref()
-                .filter(|path| path.starts_with(disk.mount_point()))
-                .map(|_| disk.mount_point().components().count())
-                .unwrap_or_else(|| usize::from(disk.mount_point() == Path::new("/")))
-        })
-        .or_else(|| disks.list().first())?;
-
-    Some(StorageSnapshot {
-        available: disk.available_space(),
-        total: disk.total_space(),
-    })
-}
-
-struct StatsPanel<'a> {
-    stats: &'a StatsSnapshot,
-}
-
-impl<'a> StatsPanel<'a> {
-    fn new(stats: &'a StatsSnapshot) -> Self {
-        Self { stats }
-    }
-}
-
-impl Widget for StatsPanel<'_> {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        let label_style = Style::default().fg(Color::Rgb(216, 122, 88));
-        let value_style = Style::default().fg(Color::White);
-        let muted_style = Style::default().fg(Color::DarkGray);
-        let panel_style = Style::default().fg(Color::Gray);
-        let storage = self
-            .stats
-            .storage
-            .map(format_storage)
-            .unwrap_or_else(|| "unavailable".to_owned());
-
-        let lines = vec![
-            Line::from(Span::styled("RASPBERRY PI", label_style)),
-            Line::from(Span::styled("------------", muted_style)),
-            Line::from(vec![
-                Span::styled("TEMP  ", label_style),
-                Span::styled(format_temperature(self.stats.temperature_c), value_style),
-            ]),
-            Line::from(vec![
-                Span::styled("NET   ", label_style),
-                Span::styled(
-                    format!(
-                        "IN {}  OUT {}",
-                        format_rate(self.stats.network_in_per_sec),
-                        format_rate(self.stats.network_out_per_sec)
-                    ),
-                    value_style,
-                ),
-            ]),
-            Line::from(vec![
-                Span::styled("DISK  ", label_style),
-                Span::styled(storage, value_style),
-            ]),
-        ];
-
-        Paragraph::new(lines).style(panel_style).render(area, buf);
-    }
-}
-
-fn format_temperature(temperature: Option<f32>) -> String {
-    temperature
-        .map(|temperature| format!("{temperature:.1} C"))
-        .unwrap_or_else(|| "unavailable".to_owned())
-}
-
-fn format_storage(storage: StorageSnapshot) -> String {
-    format!(
-        "{} free / {}",
-        format_bytes(storage.available as f64),
-        format_bytes(storage.total as f64)
-    )
-}
-
-fn format_rate(bytes_per_sec: f64) -> String {
-    format!("{}/s", format_bytes(bytes_per_sec))
-}
-
-fn format_bytes(bytes: f64) -> String {
-    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-    let mut value = bytes.max(0.0);
-    let mut unit = 0;
-
-    while value >= 1024.0 && unit < UNITS.len() - 1 {
-        value /= 1024.0;
-        unit += 1;
-    }
-
-    if unit == 0 {
-        format!("{value:.0} {}", UNITS[unit])
-    } else if value >= 10.0 {
-        format!("{value:.0} {}", UNITS[unit])
-    } else {
-        format!("{value:.1} {}", UNITS[unit])
     }
 }
 

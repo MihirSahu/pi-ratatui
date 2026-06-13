@@ -2,15 +2,24 @@
 
 A small terminal dashboard for a monitor attached to a Raspberry Pi 4B.
 
-The default screen renders a Clawd-inspired mascot walking horizontally above
-Raspberry Pi stats:
+The default screen renders a Clawd-inspired mascot walking horizontally above a
+compact system stats dashboard:
 
 - CPU temperature
-- Network input/output rates
-- Available storage
+- CPU usage, core count, RAM free/total, and uptime
+- 1, 5, and 15 minute load averages
+- Network input/output rates per second
+- Local IP address
+- Available and total storage
+- Raspberry Pi power/throttling health when available
 
 Clawd uses terminal cell background colors, which keeps the pixel-art shape more
 consistent than Unicode block characters across different terminal fonts.
+The app automatically scales the Clawd art up when the terminal has enough extra
+rows and columns. Text still uses the terminal's font size, which terminal apps
+cannot change portably.
+Most metrics come from the cross-platform `sysinfo` crate. Raspberry Pi-specific
+power health is optional: on non-Pi systems it shows `n/a` instead of failing.
 
 ## Run
 
@@ -26,6 +35,45 @@ Press `s` to toggle a suited Clawd scene.
 
 Press `Tab` or `r` to cycle through dashboard, laptop, suited, and full-screen
 roaming Clawd scenes.
+
+## Control API
+
+The app starts a local-only HTTP control API on `127.0.0.1:9898`. This is the
+v1 control plane for scripts and a future MCP server. It is intentionally bound
+to localhost.
+
+Check the API:
+
+```bash
+curl http://127.0.0.1:9898/health
+```
+
+List built-in animations:
+
+```bash
+curl http://127.0.0.1:9898/animations
+```
+
+Switch scenes:
+
+```bash
+curl -X POST http://127.0.0.1:9898/scene/dashboard
+curl -X POST http://127.0.0.1:9898/scene/coding
+curl -X POST http://127.0.0.1:9898/scene/suit
+curl -X POST http://127.0.0.1:9898/scene/roam
+```
+
+`/animation/<name>` is accepted as an alias for `/scene/<name>`:
+
+```bash
+curl -X POST http://127.0.0.1:9898/animation/coding
+```
+
+Reset back to the default dashboard:
+
+```bash
+curl -X POST http://127.0.0.1:9898/reset
+```
 
 ## Raspberry Pi
 

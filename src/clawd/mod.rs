@@ -6,11 +6,11 @@ use ratatui::{
 };
 
 pub const WIDTH: u16 = 16;
-pub const HEIGHT: u16 = 5;
-pub const CODING_WIDTH: u16 = 28;
-pub const CODING_HEIGHT: u16 = 9;
+pub const HEIGHT: u16 = 6;
+pub const CODING_WIDTH: u16 = WIDTH;
+pub const CODING_HEIGHT: u16 = HEIGHT;
 pub const SUIT_WIDTH: u16 = WIDTH;
-pub const SUIT_HEIGHT: u16 = HEIGHT + 1;
+pub const SUIT_HEIGHT: u16 = HEIGHT;
 
 const BODY: Color = Color::Rgb(216, 122, 88);
 const LAPTOP: Color = Color::Rgb(84, 88, 96);
@@ -51,75 +51,85 @@ pub fn suit_frame_count() -> usize {
 
 pub struct Clawd {
     frame: usize,
+    scale: u16,
 }
 
 impl Clawd {
-    pub fn new(frame: usize) -> Self {
+    pub fn scaled(frame: usize, scale: u16) -> Self {
         Self {
             frame: frame % FRAMES.len(),
+            scale: scale.max(1),
         }
     }
 }
 
 impl Widget for Clawd {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        render_pixels(FRAMES[self.frame], area, buf);
+        render_pixels(FRAMES[self.frame], area, buf, self.scale);
     }
 }
 
 pub struct CodingClawd {
     frame: usize,
+    scale: u16,
 }
 
 impl CodingClawd {
-    pub fn new(frame: usize) -> Self {
+    pub fn scaled(frame: usize, scale: u16) -> Self {
         Self {
             frame: frame % CODING_FRAMES.len(),
+            scale: scale.max(1),
         }
     }
 }
 
 impl Widget for CodingClawd {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        render_pixels(CODING_FRAMES[self.frame], area, buf);
+        render_pixels(CODING_FRAMES[self.frame], area, buf, self.scale);
     }
 }
 
 pub struct SuitClawd {
     frame: usize,
+    scale: u16,
 }
 
 impl SuitClawd {
-    pub fn new(frame: usize) -> Self {
+    pub fn scaled(frame: usize, scale: u16) -> Self {
         Self {
             frame: frame % SUIT_FRAMES.len(),
+            scale: scale.max(1),
         }
     }
 }
 
 impl Widget for SuitClawd {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        render_pixels(SUIT_FRAMES[self.frame], area, buf);
+        render_pixels(SUIT_FRAMES[self.frame], area, buf, self.scale);
     }
 }
 
-fn render_pixels(frame: &str, area: Rect, buf: &mut Buffer) {
+fn render_pixels(frame: &str, area: Rect, buf: &mut Buffer, scale: u16) {
     for (row, pixels) in frame.lines().enumerate() {
         for (col, pixel) in pixels.chars().enumerate() {
             let Some(color) = color_for(pixel) else {
                 continue;
             };
 
-            let y = area.y + row as u16;
-            let x = area.x + col as u16;
+            let y = area.y + row as u16 * scale;
+            let x = area.x + col as u16 * scale;
 
-            if x >= area.right() || y >= area.bottom() {
-                continue;
+            for scaled_y in y..y.saturating_add(scale) {
+                for scaled_x in x..x.saturating_add(scale) {
+                    if scaled_x >= area.right() || scaled_y >= area.bottom() {
+                        continue;
+                    }
+
+                    buf[(scaled_x, scaled_y)]
+                        .set_symbol(" ")
+                        .set_style(Style::default().bg(color));
+                }
             }
-
-            buf[(x, y)]
-                .set_symbol(" ")
-                .set_style(Style::default().bg(color));
         }
     }
 }
